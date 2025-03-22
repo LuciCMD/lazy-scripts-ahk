@@ -1,6 +1,6 @@
 ﻿#Requires AutoHotkey v2.0
 #SingleInstance Force
-; Version 3.3
+; Version 3.4
 
 ; Configuration
 Programs := ["RobloxPlayerBeta.exe"]
@@ -24,6 +24,7 @@ loop_timeout_count := Map()
 loop_delay_count := Map()
 next_action_time := Map()
 script_status := "disabled"
+active_window := 0
 
 ; Create clickthrough overlay GUI
 overlay := Gui("+AlwaysOnTop -Caption +ToolWindow +E0x20") ; Added +E0x20 for clickthrough
@@ -87,24 +88,37 @@ ResetTimer() {
 }
 
 UpdateOverlay() {
-    global script_status, next_action_time
+    global script_status, next_action_time, active_window
     timeUntilNext := "N/A"
     
     ; Only calculate time until next action if status is active
     if (script_status = "active") {
-        ; Calculate time until next action
-        for window, nextTime in next_action_time {
-            if nextTime && nextTime != 0 {
-                timeDiff := DateDiff(nextTime, A_Now, "Seconds")
+        ; First try to find the active window's next action time
+        if active_window && next_action_time.Has(active_window) && next_action_time[active_window] {
+            timeDiff := DateDiff(next_action_time[active_window], A_Now, "Seconds")
+            if timeDiff > 0
+                timeUntilNext := timeDiff " seconds"
+            else if timeDiff <= 0
+                timeUntilNext := "Now"
+        } else {
+            ; Fall back to finding the earliest next action among all windows
+            earliest := 0
+            for window, nextTime in next_action_time {
+                if nextTime && nextTime != 0 {
+                    timeDiff := DateDiff(nextTime, A_Now, "Seconds")
+                    if timeDiff > 0 && (!earliest || timeDiff < DateDiff(earliest, A_Now, "Seconds"))
+                        earliest := nextTime
+                }
+            }
+            
+            if earliest {
+                timeDiff := DateDiff(earliest, A_Now, "Seconds")
                 if timeDiff > 0
                     timeUntilNext := timeDiff " seconds"
-                else if timeDiff <= 0 && next_action_time[window] != 0
+                else
                     timeUntilNext := "Now"
             }
         }
-    } else {
-        ; If status is idle or disabled, always show N/A
-        timeUntilNext := "N/A"
     }
     
     ; Update overlay text
@@ -119,13 +133,18 @@ UpdateOverlay() {
 
 GetWindowState(windowId) {
     state := Map()
-    state["style"] := WinGetStyle("ahk_id " windowId)
-    state["wasMinimized"] := WinGetMinMax("ahk_id " windowId) = -1
+    try {
+        state["style"] := WinGetStyle("ahk_id " windowId)
+        state["wasMinimized"] := WinGetMinMax("ahk_id " windowId) = -1
+    } catch {
+        state["style"] := 0
+        state["wasMinimized"] := false
+    }
     return state
 }
 
 UpdateOnPoll() {
-    global loop_timeout_count, loop_delay_count, next_action_time, script_status
+    global loop_timeout_count, loop_delay_count, next_action_time, script_status, active_window
     script_active_flag := false
     script_idle_flag := false
 
@@ -138,6 +157,7 @@ UpdateOnPoll() {
                 loop_delay_count[window] := 1
 
             if WinActive("ahk_id " window) {
+                active_window := window
                 if (A_TimeIdlePhysical > Timeout*1000) {
                     loop_delay_count[window] -= 1
                     script_active_flag := true
@@ -145,7 +165,7 @@ UpdateOnPoll() {
                     loop_timeout_count[window] := Max(1, Round(Timeout / Poll))
                     loop_delay_count[window] := 1
                     script_idle_flag := true
-                    next_action_time[window] := 0  ; Reset next action time when idle
+                    next_action_time[window] := 0
                 }
 
                 if loop_delay_count[window] = 0 {
@@ -163,7 +183,7 @@ UpdateOnPoll() {
                 } else {
                     loop_delay_count[window] := 1
                     script_idle_flag := true
-                    next_action_time[window] := 0  ; Reset next action time when idle
+                    next_action_time[window] := 0
                 }
 
                 if loop_delay_count[window] = 0 {
@@ -171,7 +191,14 @@ UpdateOnPoll() {
                     next_action_time[window] := DateAdd(A_Now, Delay/60, "Minutes")
                     
                     BlockInput true
-                    old_window := WinGetID("A")
+                    
+                    old_window := 0
+                    try {
+                        old_window := WinGetID("A")
+                    } catch {
+                        ; No active window, tis whatevs
+                    }
+                    
                     window_state := GetWindowState(window)
                     
                     WinSetTransparent 0, "ahk_id " window
@@ -184,7 +211,16 @@ UpdateOnPoll() {
                         WinMoveBottom "ahk_id " window
                     
                     WinSetTransparent "OFF", "ahk_id " window
-                    WinActivate "ahk_id " old_window
+                    
+                    ; Only activate previous window if it exists
+                    if old_window {
+                        try {
+                            WinActivate "ahk_id " old_window
+                        } catch {
+                            ; Previous window can't be activated, also tis whatevs
+                        }
+                    }
+                    
                     BlockInput false
                 }
             }
